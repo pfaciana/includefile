@@ -504,7 +504,15 @@ class IncludeFile
 		return ( '/' === $path[0] || '\\' === $path[0] );
 	}
 
-	public static function addBase ( string $path, string $base ): string
+	/**
+	 * Adds base path to a non-absolute path
+	 *
+	 * @param string $value Value from which base path will be prepended.
+	 * @param string $base  Base path to prepend.
+	 *
+	 * @return string String with the base path.
+	 */
+	public static function add_base ( string $path, string $base ): string
 	{
 		if ( self::is_absolute_path( $path ) ) {
 			return $path;
@@ -517,6 +525,7 @@ class IncludeFile
 	 * Removes base path if it exists
 	 *
 	 * @param string $value Value from which base path will be removed.
+	 * @param string $base  Base path to remove.
 	 *
 	 * @return string String without the base path.
 	 */

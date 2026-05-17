@@ -315,13 +315,13 @@ describe( 'is_file_pattern', function () {
 describe( 'test', function () {
 
 	it( 'returns include-oriented match state', function ( string $path, bool $included, bool $notIncluded ) {
-		$includeFile = new IncludeFile( [
+		$includeFiles = new IncludeFile( [
 			'@file:README',
 			'src',
 			'!src/private',
 		] );
 
-		$result = $includeFile->test( $path );
+		$result = $includeFiles->test( $path );
 
 		expect( $result )
 			->toHaveKeys( [ 'included', 'notIncluded', 'pattern' ] )
@@ -355,7 +355,7 @@ describe( 'filtering', function () {
 			'src/Foo.php',
 		];
 
-		$includeFile = new IncludeFile( [
+		$includeFiles = new IncludeFile( [
 			'@file:README',
 			'src',
 			'*.php',
@@ -363,8 +363,8 @@ describe( 'filtering', function () {
 			'!vendor',
 		] );
 
-		expect( array_values( $includeFile->filter( $paths ) ) )->toBe( $expected )
-																->and( array_values( iterator_to_array( $includeFile->filterIterator( new ArrayIterator( $paths ) ), FALSE ) ) )->toBe( $expected );
+		expect( array_values( $includeFiles->filter( $paths ) ) )->toBe( $expected )
+																 ->and( array_values( iterator_to_array( $includeFiles->filterIterator( new ArrayIterator( $paths ) ), FALSE ) ) )->toBe( $expected );
 	} );
 
 } );
@@ -1156,9 +1156,9 @@ describe( 'match by directory', function () {
 		$dataset  = preg_replace( '/^dataset "(.+)"$/', '$1', $this->dataName() );
 		$messages = [];
 
-		$includeFile = new IncludeFile( $patterns );
-		$dirPatterns = $includeFile->get_directory_patterns();
-		$includeDirs = new IncludeFile( $dirPatterns );
+		$includeFiles = new IncludeFile( $patterns );
+		$dirPatterns  = $includeFiles->get_directory_patterns();
+		$includeDirs  = new IncludeFile( $dirPatterns );
 
 		foreach ( [ 'SKIPPED' => $match, 'MATCHED' => $skip ] as $problem => $paths ) {
 			foreach ( $paths as $path ) {
