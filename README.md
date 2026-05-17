@@ -1,2 +1,248 @@
 # includefile
-Include-pattern matcher built on automattic/ignorefile
+
+`includefile` is an include-pattern matcher designed for fast filesystem discovery.
+
+It wraps [`automattic/ignorefile`](https://github.com/Automattic/ignorefile), but exposes include-first behavior: describe the files you want, exclude the directories or files you do not want, and stream the matching entries into whatever processing step comes next.
+
+## Installation
+
+```bash
+composer require pfaciana/includefile
+```
+
+## Pattern Model
+
+Patterns are include-first.
+
+```text
+src         include the src directory and descendants
+**/*.php    include PHP files anywhere
+!vendor     exclude the vendor directory and descendants
+```
+
+The pattern syntax comes from Git-style ignore files, through `automattic/ignorefile`. Use Git ignore-pattern behavior as the baseline model; this package does NOT define a new glob language.
+
+Internally, `includefile` converts include patterns into ignore-style rules for `automattic/ignorefile`. That matters because `!` means "exclude from the include set" in this package, even though `!` means "unignore" in a `.gitignore` file.
+
+`automattic/ignorefile` compiles patterns to regex. It does not check the filesystem to find out whether an ambiguous path is a file or a directory. A pattern like `.examples` could refer to either one, so `includefile` has to classify ambiguous patterns before it can build traversal filters.
+
+### Ambiguous Files vs Directories
+
+`includefile` classifies patterns as file patterns or directory patterns. That classification is a best guess based on the pattern text, not a filesystem check. It is used when building traversal filters.
+
+Default rules:
+
+- A final path segment with no dots is treated as a directory: `src`, `vendor`, `bin/console`, `v1.2/config`.
+- A final path segment with a dot is treated as a file: `index.php`, `src/config.json`.
+- EXCEPT: Single-dot hidden names are treated as directories: `.git`, `.agents`, `.claude`, `.env`, `.gitignore`.
+
+So in short, `no dot = directory`, `dot = file`, unless hidden `hidden dot = directory`.
+
+Force rules:
+
+If you dont want to leave anything to change, you force how a pattern is treated.
+
+- A trailing `/`, `/*`, or `/**` makes the pattern a directory pattern.
+- `@file:` forces a pattern to be treated as a file: `@file:README`, `@file:bin/console`, `@file:.env`, `@file:.gitignore`.
+  - Negation works with `@file:` by putting `!` first: `!@file:README`, `!@file:.env`, `!@file:.gitignore` you're saying `DO NOT INCLUDE` (or `EXCLUDE`) this file.
+
+Hidden names are biased toward directories because directory pruning is usually more important for names like `.git`, `.agents`, and `.claude`. Files like `.gitattributes`, `.gitignore`, and `.env` do exist; use `@file:` when the hidden pattern is meant to be a file.
+
+So in short, `end in slash = directory`, `starts with @file: (or !@file:) = file`.
+
+### Directory Pruning
+
+Some excluded directory patterns are terminal during traversal.
+
+```text
+!vendor
+!.git
+!node_modules
+```
+
+These exclude the directory and descendants, so discovery can skip descending into them.
+
+Open-ended exclusions are different:
+
+```text
+!vendor/*
+!vendor/**
+```
+
+Those exclude contents but are not terminal, because a later include pattern may still make a descendant reachable.
+
+```text
+src
+!src/vendor/*
+src/vendor/acme
+```
+
+Use terminal exclusions when nothing under that directory should be discovered. Use open-ended exclusions when later include patterns may re-include descendants.
+
+This follows the same reachability model as Git ignore files, with the include/exclude meaning inverted. If traversal excludes a directory itself, later patterns for descendants under that directory cannot be reached during filesystem discovery.
+
+## File Discovery
+
+A common use is to stream matching files from a base directory.
+
+```php
+use Render\IncludeFile;
+
+$include = new IncludeFile( [
+	'**/*.php',
+	'!.git',
+	'!node_modules',
+	'!tests',
+	'!vendor',
+] );
+
+$baseDir = IncludeFile::add_trailing_slash( IncludeFile::normalize( __DIR__ ) );
+
+$files = IncludeFile::get_files( $baseDir, [
+	'filter' => $include->getDefaultCallbackFilter( $baseDir ),
+] );
+
+foreach ( $files as $file ) {
+	// Process each matching SplFileInfo entry.
+}
+```
+
+`get_files()` returns a generator. The default callback filter uses the include patterns for files and prunes terminal excluded directories before descending into them.
+
+### `get_files()`
+
+`IncludeFile::get_files()` is the common helper for filesystem discovery. It creates the recursive iterators, applies an optional traversal filter, and yields matching entries.
+
+```php
+IncludeFile::get_files( string|array $directories, array|callable|null $config = NULL ): \Generator
+```
+
+The first argument is a directory path or a list of directory paths.
+
+The second argument may be:
+
+- `NULL` to walk without a filter.
+- A callable filter, passed directly to `RecursiveCallbackFilterIterator`.
+- A config array.
+
+Config keys:
+
+- `filter`: callable filter or `FALSE`.
+- `maxDepth`: maximum recursive depth, default `50`.
+- `flags`: `RecursiveDirectoryIterator` flags.
+- `mode`: `RecursiveIteratorIterator` mode, default `RecursiveIteratorIterator::LEAVES_ONLY`.
+
+Use it with `getDefaultCallbackFilter()` for normal include-pattern discovery. Use a custom filter when the caller can cheaply reject entries before calling `includes()`.
+
+## Custom Discovery Filters
+
+Use the default callback filter for normal discovery. The source is short enough to treat as the baseline:
+
+```php
+public function getDefaultCallbackFilter ( string $baseDir ): callable|false
+{
+	$includeDirs = static::get_terminating_directory_instance( $this->patterns );
+
+	$baseDir = static::add_trailing_slash( static::normalize( $baseDir ) );
+
+	return function ( $fileInfo, $absPath ) use ( $baseDir, $includeDirs ): bool {
+		$relPath = static::strip_base( $absPath, $baseDir );
+
+		if ( is_dir( $absPath ) ) {
+			return $includeDirs ? $includeDirs->includes( $relPath ) : TRUE;
+		}
+
+		return $this->includes( $relPath );
+	};
+}
+```
+
+Use a custom filter when caller-specific checks can avoid unnecessary pattern matching.
+
+```php
+function getCustomCallbackFilter ( string $baseDir, array $patterns ): callable|false
+{
+	$includeDirs = static::get_terminating_directory_instance( $patterns );
+
+	$baseDir = static::add_trailing_slash( static::normalize( $baseDir ) );
+
+	return function ( $fileInfo, $absPath ) use ( $baseDir, $includeDirs ): bool {
+		$relPath = static::strip_base( $absPath, $baseDir );
+
+		if ( is_dir( $absPath ) ) {
+			return $includeDirs ? $includeDirs->includes( $relPath ) : TRUE;
+		}
+		
+		// Add cheap pre-check before regex-backed include matching when the caller knows the target shape.
+		// This speeds up performance considerably by avoiding unnecessary regex checks.
+		if ( !str_ends_with( strtolower( $relPath ), '.php' ) ) {
+			return FALSE;
+		}
+
+		return $this->includes( $relPath );
+	};
+}
+```
+
+That check is useful when the caller only wants PHP files. The suffix check is a simple string operation; `includes()` runs the regex-backed pattern matcher. Avoiding that regex check for paths that cannot match is useful when walking large trees.
+
+See `examples/file-discovery-basic.php` for a direct file discovery example.
+
+See `examples/file-discovery-advanced.php` for the full wrapper-style example. It normalizes a base directory, builds a reusable discovery function, adapts the native `RecursiveCallbackFilterIterator` callback, and passes extra context into the caller's custom filter.
+
+See `examples/get-files.php` for using `get_files()` without include patterns.
+
+## Direct Pattern Matching
+
+If you dont need to discover files, meaning you already know the exact files you want to test, then you can use the `includes()` and `filter()` methods.
+
+Use `includes()` when you already have a path and only need to test it.
+
+```php
+$include = new IncludeFile( [
+	'@file:README',
+	'src',
+	'!src/private',
+] );
+
+if ( $include->includes( 'src/IncludeFile.php' ) ) {
+	// Included.
+}
+```
+
+Use `filter()` when you already have an array of paths.
+
+```php
+$filesToProcess = $include->filter( $allFiles );
+```
+
+Use `test()` when you need the include state and the matching pattern.
+
+```php
+$result = $include->test( 'src/private/Secret.php' );
+
+// [
+//     'included' => false,
+//     'notIncluded' => true,
+//     'pattern' => '!src/private',
+// ]
+```
+
+## Gotchas
+
+When testing a raw directory path string with `includes()`, include the trailing `/`. Without it, `automattic/ignorefile` treats the path like a file path.
+
+```php
+$include->includes( 'src/' ); // directory path string
+$include->includes( 'src' );  // file-like path string
+```
+
+This is separate from pattern classification. As a pattern, `src` is treated as a directory pattern and includes `src` and descendants.
+
+Strict mode is enabled by default. Invalid patterns throw `Automattic\IgnoreFile\InvalidPatternException`.
+
+```php
+$include->setStrictMode( false );
+```
+
+Pattern parsing comes from `automattic/ignorefile`; known incompatibilities with Git are inherited from that package.

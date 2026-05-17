@@ -1,0 +1,42 @@
+{
+	"name": "pfaciana/includefile",
+	"version": "0.1.0",
+	"description": "Include-pattern matcher built on automattic/ignorefile",
+	"keywords": [],
+	"license": "GPL-2.0-only",
+	"type": "library",
+	"homepage": "https://renderdev.com/",
+	"authors": [
+		{
+			"name": "Phil Faciana",
+			"email": "phil@renderdev.com",
+			"homepage": "https://renderdev.com/",
+			"role": "Developer"
+		}
+	],
+	"scripts": {
+		"test": "pest",
+		"test:parallel": "pest --parallel",
+		"test:watch": "pest --watch",
+		"test:coverage": "@php -d xdebug.mode=coverage vendor/bin/pest --coverage",
+		"cda": "composer dumpautoload",
+		"cdao": "composer dumpautoload --optimize"
+	},
+	"autoload": {
+		"psr-4": {
+			"Render\\": "src/"
+		}
+	},
+	"config": {
+		"allow-plugins": {
+			"pestphp/pest-plugin": true
+		}
+	},
+	"require-dev": {
+		"pestphp/pest": "4.6.3"
+	},
+	"require": {
+		"php": "^8.1",
+		"automattic/ignorefile": "^3.0"
+	}
+}
