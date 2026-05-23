@@ -413,10 +413,6 @@ class IncludeFile
 	 */
 	public static function get_files ( string|array $directories, array|callable|null $config = NULL ): \Generator
 	{
-		if ( empty( $directories ) ) {
-			throw new \InvalidArgumentException( "Not a directory or list of directories: {$directories}" );
-		}
-
 		if ( !is_array( $directories ) ) {
 			$directories = (array) $directories;
 		}

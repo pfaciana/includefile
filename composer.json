@@ -1,6 +1,6 @@
 {
 	"name": "pfaciana/includefile",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Include-pattern matcher built on automattic/ignorefile",
 	"keywords": [],
 	"license": "GPL-2.0-only",
