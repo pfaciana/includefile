@@ -124,20 +124,29 @@ The second argument may be:
 - `NULL` to walk without a filter.
 - A callable filter, passed directly to `RecursiveCallbackFilterIterator`.
 - A string extension or dotted filename suffix, normalized to `filterByExt`.
+- A list of string extensions or dotted filename suffixes, normalized to `filterByExt`.
 - A config array.
 
 Config keys:
 
 - `filter`: callable filter or `FALSE`.
-- `filterByExt`: string extension or dotted filename suffix to filter yielded files.
+- `filterByExt`: string or list of extensions/dotted filename suffixes to filter yielded files.
 - `maxDepth`: maximum recursive depth, default `50`.
 - `flags`: `RecursiveDirectoryIterator` flags.
 - `mode`: `RecursiveIteratorIterator` mode, default `RecursiveIteratorIterator::LEAVES_ONLY`.
 
-Use it with `getFilter()` for normal include-pattern discovery. Use `makeFilter()` when the caller can cheaply reject entries before calling `includes()`. The built-in `filterByExt` check is for the default leaf/fileinfo traversal; use a callable filter when custom iterator modes or current modes need extension filtering.
+Extension filters are case-insensitive. Values like `'php'`, `'.php'`, and `'*.php'` are equivalent. Dotted suffixes like `'inc.php'` match the full filename suffix. An empty string matches extensionless files, and an empty list means no extension filter. Unsupported `filterByExt` values are treated as no extension filter.
+
+Use it with `getFilter()` for normal include-pattern discovery. Use `filterByExt` beside `filter` when you want include-pattern filtering and extension filtering together. The built-in `filterByExt` check is for the default leaf/fileinfo traversal; use a callable filter when custom iterator modes or current modes need extension filtering.
 
 ```php
 $phpFiles = IncludeFile::get_files( $baseDir, 'php' );
+$assetFiles = IncludeFile::get_files( $baseDir, [ 'php', 'json', 'md' ] );
+
+$includedPhpFiles = IncludeFile::get_files( $baseDir, [
+	'filter'      => $include->getFilter( $baseDir ),
+	'filterByExt' => 'php',
+] );
 ```
 
 ## Custom Discovery Filters
@@ -158,7 +167,7 @@ Callbacks may omit trailing parameters, but declared parameters must keep the do
 ```php
 $filter = $include->makeFilter( $baseDir, [
 	'file' => function ( $fileInfo, $iterator, string $absPath, string $relPath ): ?bool {
-		if ( !str_ends_with( strtolower( $relPath ), '.php' ) ) {
+		if ( str_contains( $relPath, '/generated/' ) ) {
 			return FALSE;
 		}
 
@@ -167,17 +176,11 @@ $filter = $include->makeFilter( $baseDir, [
 ] );
 ```
 
-Passing a string extension or dotted filename suffix to `makeFilter()` adds the same cheap pre-check:
-
-```php
-$filter = $include->makeFilter( $baseDir, 'php' );
-```
-
-For default behavior, `getFilter()` is shorthand for `makeFilter( $baseDir )`.
+For extension filtering, use `get_files()` with `filterByExt`. For default traversal behavior, `getFilter()` is shorthand for `makeFilter( $baseDir )`.
 
 `getDefaultCallbackFilter()` is still available as a deprecated compatibility alias.
 
-That check is useful when the caller only wants PHP files. The suffix check is a simple string operation; `includes()` runs the regex-backed pattern matcher. Avoiding that regex check for paths that cannot match is useful when walking large trees.
+`filterByExt` is useful when the caller only wants specific file types. It runs after the traversal filter and before yielding files, so `filter` can prune directories while `filterByExt` keeps extension checks out of custom callback code.
 
 See `examples/file-discovery-basic.php` for a direct file discovery example.
 

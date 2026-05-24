@@ -19,7 +19,7 @@ $dirs = [
 $baseDirs = array_map( fn( $dir ) => $baseDir . '/' . $dir, $dirs );
 
 $files = IncludeFile::get_files( $baseDirs, [
-	'filter' => fn( $_, $absPath ) => is_dir( $absPath ) ?: str_ends_with( strtolower( $absPath ), '.php' ),
+	'filterByExt' => 'php',
 ] );
 
 $entries = iterator_to_array( $files );

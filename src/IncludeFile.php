@@ -282,36 +282,21 @@ class IncludeFile
 	 * Return a bool to short-circuit the default filter, or null to continue to the default behavior.
 	 *
 	 * @param string $baseDir Base directory used to make traversed paths relative.
-	 * @param string|array{
+	 * @param array{
 	 *     dir?:  callable|null,
-	 *     file?: callable|string|null,
+	 *     file?: callable|null,
 	 *     allowLinks?: bool
 	 * }             $config  Optional short-circuit callbacks.
 	 *
 	 * @return callable|false RecursiveCallbackFilterIterator callback, or false when no filter is needed.
 	 */
-	public function makeFilter ( string $baseDir, string|array $config = [] ): callable|false
+	public function makeFilter ( string $baseDir, array $config = [] ): callable|false
 	{
-		if ( is_string( $config ) ) {
-			$config = [ 'file' => $config ];
-		}
-
 		$config = array_merge( [
 			'dir'        => NULL,
 			'file'       => NULL,
 			'allowLinks' => FALSE,
 		], $config );
-
-		if ( is_string( $config['file'] ) ) {
-			$config['file'] = ltrim( strtolower( $config['file'] ), '*.' );
-			if ( str_contains( $config['file'], '.' ) ) {
-				$config['file'] = '.' . $config['file'];
-				$config['file'] = fn( $fileInfo ) => substr_compare( $fileInfo->getFilename(), $config['file'], -strlen( $config['file'] ), NULL, TRUE ) === 0 ? NULL : FALSE;
-			}
-			else {
-				$config['file'] = fn( $fileInfo ) => strcasecmp( $fileInfo->getExtension(), $config['file'] ) === 0 ? NULL : FALSE;
-			}
-		}
 
 		foreach ( [ 'file', 'dir' ] as $key ) {
 			if ( !is_callable( $config[$key] ) ) {
@@ -490,18 +475,19 @@ class IncludeFile
 	/**
 	 * Recursively yield files under $base.
 	 *
-	 * Second arg accepts a string extension, callable (legacy), or a config array:
+	 * Second arg accepts a string extension, extension list, callable (legacy), or a config array:
 	 * - filter:      callable — RecursiveCallbackFilterIterator callback (prunes descent)
-	 * - filterByExt: string — filters yielded files by extension
+	 * - filterByExt: string|string[] — filters yielded files by extension
 	 * - maxDepth:    int — RecursiveIteratorIterator::setMaxDepth (default 50)
 	 * - flags:       int — FilesystemIterator/RecursiveDirectoryIterator flags
 	 * - mode:        int — RecursiveIteratorIterator mode
 	 *
 	 * A bare callable is normalized to [ 'filter' => $callable ] for BC.
 	 * A bare string is normalized to [ 'filterByExt' => $string ].
+	 * A bare list array is normalized to [ 'filterByExt' => $array ].
 	 *
 	 * @param string|string[]            $directories Base directory or an array of base directories
-	 * @param array|callable|string|null $config      Config array, extension string, or legacy filter callback
+	 * @param array|callable|string|null $config      Config array, extension string/list, or legacy filter callback
 	 *
 	 * @return \Generator
 	 */
@@ -511,7 +497,7 @@ class IncludeFile
 			$directories = (array) $directories;
 		}
 
-		if ( is_string( $config ) ) {
+		if ( is_string( $config ) || ( is_array( $config ) && array_is_list( $config ) ) ) {
 			$config = [ 'filterByExt' => $config ];
 		}
 		elseif ( !is_array( $config ) ) {
@@ -526,17 +512,13 @@ class IncludeFile
 			'mode'        => \RecursiveIteratorIterator::LEAVES_ONLY,
 		], $config );
 
-		if ( is_string( $config['filterByExt'] ) ) {
-			if ( ( $config['filterByExt'] = ltrim( strtolower( $config['filterByExt'] ), '*.' ) ) === '' ) {
-				$config['filterByExt'] = FALSE;
-			}
-			elseif ( str_contains( $config['filterByExt'], '.' ) ) {
-				$config['filterByExt'] = '.' . $config['filterByExt'];
-			}
-		}
-		else {
-			$config['filterByExt'] = FALSE;
-		}
+		$config['filterByExt'] = static::normalize_filter_by_ext( $config['filterByExt'] );
+
+		[ $matchExtensionless, $extensionFilters, $suffixFiltersByExtension, ] = static::compile_extension_filter( $config['filterByExt'] );
+
+		$filterByExt = !empty( $config['filterByExt'] ) //
+			&& ( ( $config['mode'] & ( \RecursiveIteratorIterator::SELF_FIRST | \RecursiveIteratorIterator::CHILD_FIRST ) ) === \RecursiveIteratorIterator::LEAVES_ONLY ) // leaves only
+			&& ( ( $config['flags'] & \FilesystemIterator::CURRENT_MODE_MASK ) === \FilesystemIterator::CURRENT_AS_FILEINFO ); // fileInfo as value
 
 		foreach ( $directories as $directory ) {
 			if ( $config['flags'] & \FilesystemIterator::UNIX_PATHS ) {
@@ -554,20 +536,22 @@ class IncludeFile
 			$iterator = new \RecursiveIteratorIterator( $directoryIterator, $config['mode'] );
 			$iterator->setMaxDepth( $config['maxDepth'] );
 
-			if ( is_string( $config['filterByExt'] )
-				&& ( ( $config['mode'] & ( \RecursiveIteratorIterator::SELF_FIRST | \RecursiveIteratorIterator::CHILD_FIRST ) ) === \RecursiveIteratorIterator::LEAVES_ONLY ) //
-				&& ( ( $config['flags'] & \FilesystemIterator::CURRENT_MODE_MASK ) === \FilesystemIterator::CURRENT_AS_FILEINFO ) ) {
-				if ( $config['filterByExt'][0] === '.' ) {
-					foreach ( $iterator as $path => $file ) {
-						if ( substr_compare( $file->getFilename(), $config['filterByExt'], -strlen( $config['filterByExt'] ), NULL, TRUE ) === 0 ) {
-							yield $path => $file;
-						}
+			if ( $filterByExt ) {
+				foreach ( $iterator as $path => $file ) {
+					$extension = strtolower( $file->getExtension() );
+
+					if ( isset( $extensionFilters[$extension] ) || ( $extension === '' && $matchExtensionless ) ) {
+						yield $path => $file;
 					}
-				}
-				else {
-					foreach ( $iterator as $path => $file ) {
-						if ( strcasecmp( $file->getExtension(), $config['filterByExt'] ) === 0 ) {
-							yield $path => $file;
+					else {
+						if ( isset( $suffixFiltersByExtension[$extension] ) ) {
+							$filename = strtolower( $file->getFilename() );
+							foreach ( $suffixFiltersByExtension[$extension] as $suffix ) {
+								if ( str_ends_with( $filename, $suffix ) ) {
+									yield $path => $file;
+									break;
+								}
+							}
 						}
 					}
 				}
@@ -576,6 +560,43 @@ class IncludeFile
 				yield from $iterator;
 			}
 		}
+	}
+
+	public static function normalize_filter_by_ext ( mixed $filterByExt ): array
+	{
+		if ( is_string( $filterByExt ) ) {
+			$filterByExt = (array) $filterByExt;
+		}
+
+		if ( !is_array( $filterByExt ) ) {
+			return [];
+		}
+
+		return array_map( function ( $ext ): string {
+			return ( ( $ext = ltrim( strtolower( (string) $ext ), '*.' ) ) !== '' && str_contains( $ext, '.' ) ) ? '.' . $ext : $ext;
+		}, $filterByExt );
+	}
+
+	public static function compile_extension_filter ( array $filterByExt ): array
+	{
+		$matchExtensionless       = FALSE;
+		$extensionFilters         = [];
+		$suffixFiltersByExtension = [];
+
+		foreach ( $filterByExt as $ext ) {
+			if ( $ext === '' ) {
+				$matchExtensionless = TRUE;
+			}
+			elseif ( $ext[0] === '.' ) {
+				$extension                              = substr( $ext, strrpos( $ext, '.' ) + 1 );
+				$suffixFiltersByExtension[$extension][] = $ext;
+			}
+			else {
+				$extensionFilters[$ext] = TRUE;
+			}
+		}
+
+		return [ $matchExtensionless, $extensionFilters, $suffixFiltersByExtension ];
 	}
 
 	/**

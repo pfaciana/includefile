@@ -8,12 +8,13 @@ require_once dirname( __DIR__ ) . '/vendor/autoload.php';
 function getEntries ( array $config ): \Generator
 {
 	$config = array_merge( [
-		'patterns' => [ '*' ],
-		'cwd'      => getcwd(),
-		'filter'   => TRUE,
-		'maxDepth' => 25,
-		'flags'    => NULL,
-		'mode'     => NULL,
+		'patterns'    => [ '*' ],
+		'cwd'         => getcwd(),
+		'filter'      => TRUE,
+		'filterByExt' => NULL,
+		'maxDepth'    => 25,
+		'flags'       => NULL,
+		'mode'        => NULL,
 	], $config );
 
 	if ( !IncludeFile::is_absolute_path( $config['cwd'] ) ) {
@@ -34,26 +35,23 @@ function getEntries ( array $config ): \Generator
 	}
 
 	return IncludeFile::get_files( $baseDir, array_filter( [
-		'filter'   => $filter,
-		'maxDepth' => $config['maxDepth'],
-		'flags'    => $config['flags'],
-		'mode'     => $config['mode'],
+		'filter'      => $filter,
+		'filterByExt' => $config['filterByExt'],
+		'maxDepth'    => $config['maxDepth'],
+		'flags'       => $config['flags'],
+		'mode'        => $config['mode'],
 	], fn( $v ) => isset( $v ) ) );
 }
 
 $files = getEntries( [
-	'cwd'      => '..',
-	'patterns' => [ '**/*.php', '!.git', '!node_modules', '!tests', '!vendor' ],
-	'filter'   => function ( $fileInfo, $absPath, $baseDir, $includeFiles, $includeDirs ): bool {
+	'cwd'         => '..',
+	'patterns'    => [ '*', '!.git', '!node_modules', '!tests', '!vendor' ],
+	'filterByExt' => 'php',
+	'filter'      => function ( $fileInfo, $absPath, $baseDir, $includeFiles, $includeDirs ): bool {
 		$relPath = IncludeFile::strip_base( $absPath, $baseDir );
 
 		if ( is_dir( $absPath ) ) { // circuit-break if pattern is a terminal dir
 			return $includeDirs ? $includeDirs->includes( $relPath ) : TRUE;
-		}
-
-		// Add cheap pre-check before regex-backed include matching when the caller knows the target shape.
-		if ( !str_ends_with( strtolower( $relPath ), '.php' ) ) {
-			return FALSE;
 		}
 
 		return $includeFiles->includes( $relPath );
