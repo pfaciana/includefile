@@ -228,22 +228,114 @@ class IncludeFile
 	/**
 	 * Get a traversal filter that prunes directories excluded by terminating patterns.
 	 *
-	 * @param string   $baseDir  Base directory used to make traversed paths relative.
-	 * @param string[] $patterns Include/exclude patterns to inspect.
+	 * @deprecated Use getFilter() instead.
+	 *
+	 * @param string $baseDir Base directory used to make traversed paths relative.
+	 * @param array{
+	 *     allowLinks?: bool
+	 * }             $config  Optional traversal config.
 	 *
 	 * @return callable|false RecursiveCallbackFilterIterator callback, or false when no filter is needed.
 	 */
-	public function getDefaultCallbackFilter ( string $baseDir ): callable|false
+	public function getDefaultCallbackFilter ( string $baseDir, array $config = [] ): callable|false
 	{
+		return $this->getFilter( ...func_get_args() );
+	}
+
+	/**
+	 * Get a traversal filter that prunes directories excluded by terminating patterns.
+	 *
+	 * @param string $baseDir Base directory used to make traversed paths relative.
+	 * @param array{
+	 *      allowLinks?: bool
+	 *  }            $config  Optional traversal config.
+	 *
+	 * @return callable|false RecursiveCallbackFilterIterator callback, or false when no filter is needed.
+	 */
+	public function getFilter ( string $baseDir, array $config = [] ): callable|false
+	{
+		$config = array_merge( [
+			'allowLinks' => FALSE,
+		], $config );
+
 		$includeDirs = static::get_terminating_directory_instance( $this->patterns );
 
 		$baseDir = static::add_trailing_slash( static::normalize( $baseDir ) );
 
-		return function ( $fileInfo, $absPath ) use ( $baseDir, $includeDirs ): bool {
+		return function ( $fileInfo, $absPath, $iterator ) use ( $baseDir, $includeDirs, $config ): bool {
 			$relPath = static::strip_base( $absPath, $baseDir );
 
-			if ( is_dir( $absPath ) ) {
+			if ( $iterator->hasChildren( $config['allowLinks'] ) ) {
 				return $includeDirs ? $includeDirs->includes( $relPath ) : TRUE;
+			}
+
+			return $this->includes( $relPath );
+		};
+	}
+
+	/**
+	 * Make a traversal filter with optional short-circuit callbacks.
+	 *
+	 * The `dir` callback receives the iterator item, absolute path, relative path, base directory,
+	 * terminating-directory matcher, and current IncludeFile instance. The `file` callback
+	 * receives the same values with current IncludeFile instance before terminating-directory matcher.
+	 * Return a bool to short-circuit the default filter, or null to continue to the default behavior.
+	 *
+	 * @param string $baseDir Base directory used to make traversed paths relative.
+	 * @param string|array{
+	 *     dir?:  callable|null,
+	 *     file?: callable|string|null,
+	 *     allowLinks?: bool
+	 * }             $config  Optional short-circuit callbacks.
+	 *
+	 * @return callable|false RecursiveCallbackFilterIterator callback, or false when no filter is needed.
+	 */
+	public function makeFilter ( string $baseDir, string|array $config = [] ): callable|false
+	{
+		if ( is_string( $config ) ) {
+			$config = [ 'file' => $config ];
+		}
+
+		$config = array_merge( [
+			'dir'        => NULL,
+			'file'       => NULL,
+			'allowLinks' => FALSE,
+		], $config );
+
+		if ( is_string( $config['file'] ) ) {
+			$config['file'] = ltrim( strtolower( $config['file'] ), '*.' );
+			if ( str_contains( $config['file'], '.' ) ) {
+				$config['file'] = '.' . $config['file'];
+				$config['file'] = fn( $fileInfo ) => substr_compare( $fileInfo->getFilename(), $config['file'], -strlen( $config['file'] ), NULL, TRUE ) === 0 ? NULL : FALSE;
+			}
+			else {
+				$config['file'] = fn( $fileInfo ) => strcasecmp( $fileInfo->getExtension(), $config['file'] ) === 0 ? NULL : FALSE;
+			}
+		}
+
+		foreach ( [ 'file', 'dir' ] as $key ) {
+			if ( !is_callable( $config[$key] ) ) {
+				$config[$key] = NULL;
+			}
+		}
+
+		$includeDirs = static::get_terminating_directory_instance( $this->patterns );
+
+		$baseDir = static::add_trailing_slash( static::normalize( $baseDir ) );
+
+		return function ( $fileInfo, $absPath, $iterator ) use ( $baseDir, $includeDirs, $config ): bool {
+			$relPath = static::strip_base( $absPath, $baseDir );
+
+			if ( $iterator->hasChildren( $config['allowLinks'] ) ) {
+				if ( $config['dir'] && is_bool( $result = $config['dir']( $iterator, $fileInfo, $absPath, $relPath, $baseDir, $includeDirs, $this ) ) ) {
+					return $result;
+				}
+
+				return $includeDirs ? $includeDirs->includes( $relPath ) : TRUE;
+			}
+
+			if ( $config['file'] && is_bool( $result = $config['file']( $fileInfo, $iterator, $absPath, $relPath, $baseDir, $this, $includeDirs ) ) ) {
+				return $result;
 			}
 
 			return $this->includes( $relPath );
@@ -398,37 +490,59 @@ class IncludeFile
 	/**
 	 * Recursively yield files under $base.
 	 *
-	 * Second arg accepts a callable (legacy) or a config array:
-	 * - filter: callable — RecursiveCallbackFilterIterator callback (prunes descent)
+	 * Second arg accepts a string extension, callable (legacy), or a config array:
+	 * - filter:      callable — RecursiveCallbackFilterIterator callback (prunes descent)
+	 * - filterByExt: string — filters yielded files by extension
 	 * - maxDepth:    int — RecursiveIteratorIterator::setMaxDepth (default 50)
 	 * - flags:       int — FilesystemIterator/RecursiveDirectoryIterator flags
 	 * - mode:        int — RecursiveIteratorIterator mode
 	 *
 	 * A bare callable is normalized to [ 'filter' => $callable ] for BC.
+	 * A bare string is normalized to [ 'filterByExt' => $string ].
 	 *
-	 * @param string|string[]     $directories Base directory or an array of base directories
-	 * @param array|callable|null $config      Config array or legacy filter callback
+	 * @param string|string[]            $directories Base directory or an array of base directories
+	 * @param array|callable|string|null $config      Config array, extension string, or legacy filter callback
 	 *
 	 * @return \Generator
 	 */
-	public static function get_files ( string|array $directories, array|callable|null $config = NULL ): \Generator
+	public static function get_files ( string|array $directories, array|callable|string|null $config = NULL ): \Generator
 	{
 		if ( !is_array( $directories ) ) {
 			$directories = (array) $directories;
 		}
 
-		if ( !is_array( $config ) ) {
+		if ( is_string( $config ) ) {
+			$config = [ 'filterByExt' => $config ];
+		}
+		elseif ( !is_array( $config ) ) {
 			$config = is_callable( $config ) ? [ 'filter' => $config ] : [];
 		}
 
 		$config = array_merge( [
-			'filter'   => FALSE,
-			'maxDepth' => 50,
-			'flags'    => \FilesystemIterator::KEY_AS_PATHNAME | \FilesystemIterator::CURRENT_AS_FILEINFO | \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::UNIX_PATHS,
-			'mode'     => \RecursiveIteratorIterator::LEAVES_ONLY,
+			'filter'      => FALSE,
+			'filterByExt' => FALSE,
+			'maxDepth'    => 50,
+			'flags'       => \FilesystemIterator::KEY_AS_PATHNAME | \FilesystemIterator::CURRENT_AS_FILEINFO | \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::UNIX_PATHS,
+			'mode'        => \RecursiveIteratorIterator::LEAVES_ONLY,
 		], $config );
 
+		if ( is_string( $config['filterByExt'] ) ) {
+			if ( ( $config['filterByExt'] = ltrim( strtolower( $config['filterByExt'] ), '*.' ) ) === '' ) {
+				$config['filterByExt'] = FALSE;
+			}
+			elseif ( str_contains( $config['filterByExt'], '.' ) ) {
+				$config['filterByExt'] = '.' . $config['filterByExt'];
+			}
+		}
+		else {
+			$config['filterByExt'] = FALSE;
+		}
+
 		foreach ( $directories as $directory ) {
+			if ( $config['flags'] & \FilesystemIterator::UNIX_PATHS ) {
+				$directory = static::normalize( $directory );
+			}
+
 			if ( !is_dir( $directory ) ) {
 				throw new \InvalidArgumentException( "Not a directory: {$directory}" );
 			}
@@ -439,7 +553,28 @@ class IncludeFile
 			}
 			$iterator = new \RecursiveIteratorIterator( $directoryIterator, $config['mode'] );
 			$iterator->setMaxDepth( $config['maxDepth'] );
-			yield from $iterator;
+
+			if ( is_string( $config['filterByExt'] )
+				&& ( ( $config['mode'] & ( \RecursiveIteratorIterator::SELF_FIRST | \RecursiveIteratorIterator::CHILD_FIRST ) ) === \RecursiveIteratorIterator::LEAVES_ONLY ) //
+				&& ( ( $config['flags'] & \FilesystemIterator::CURRENT_MODE_MASK ) === \FilesystemIterator::CURRENT_AS_FILEINFO ) ) {
+				if ( $config['filterByExt'][0] === '.' ) {
+					foreach ( $iterator as $path => $file ) {
+						if ( substr_compare( $file->getFilename(), $config['filterByExt'], -strlen( $config['filterByExt'] ), NULL, TRUE ) === 0 ) {
+							yield $path => $file;
+						}
+					}
+				}
+				else {
+					foreach ( $iterator as $path => $file ) {
+						if ( strcasecmp( $file->getExtension(), $config['filterByExt'] ) === 0 ) {
+							yield $path => $file;
+						}
+					}
+				}
+			}
+			else {
+				yield from $iterator;
+			}
 		}
 	}
 

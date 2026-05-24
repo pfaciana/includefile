@@ -30,7 +30,7 @@ function getEntries ( array $config ): \Generator
 		$filter      = fn( $fileInfo, $absPath ) => $config['filter']( $fileInfo, $absPath, $baseDir, $includeFiles, $includeDirs );
 	}
 	elseif ( $config['filter'] ) {
-		$filter = $includeFiles->getDefaultCallbackFilter( $baseDir );
+		$filter = $includeFiles->getFilter( $baseDir );
 	}
 
 	return IncludeFile::get_files( $baseDir, array_filter( [

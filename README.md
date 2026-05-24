@@ -99,7 +99,7 @@ $include = new IncludeFile( [
 $baseDir = IncludeFile::add_trailing_slash( IncludeFile::normalize( __DIR__ ) );
 
 $files = IncludeFile::get_files( $baseDir, [
-	'filter' => $include->getDefaultCallbackFilter( $baseDir ),
+	'filter' => $include->getFilter( $baseDir ),
 ] );
 
 foreach ( $files as $file ) {
@@ -114,7 +114,7 @@ foreach ( $files as $file ) {
 `IncludeFile::get_files()` is the common helper for filesystem discovery. It creates the recursive iterators, applies an optional traversal filter, and yields matching entries.
 
 ```php
-IncludeFile::get_files( string|array $directories, array|callable|null $config = NULL ): \Generator
+IncludeFile::get_files( string|array $directories, array|callable|string|null $config = NULL ): \Generator
 ```
 
 The first argument is a directory path or a list of directory paths.
@@ -123,66 +123,59 @@ The second argument may be:
 
 - `NULL` to walk without a filter.
 - A callable filter, passed directly to `RecursiveCallbackFilterIterator`.
+- A string extension or dotted filename suffix, normalized to `filterByExt`.
 - A config array.
 
 Config keys:
 
 - `filter`: callable filter or `FALSE`.
+- `filterByExt`: string extension or dotted filename suffix to filter yielded files.
 - `maxDepth`: maximum recursive depth, default `50`.
 - `flags`: `RecursiveDirectoryIterator` flags.
 - `mode`: `RecursiveIteratorIterator` mode, default `RecursiveIteratorIterator::LEAVES_ONLY`.
 
-Use it with `getDefaultCallbackFilter()` for normal include-pattern discovery. Use a custom filter when the caller can cheaply reject entries before calling `includes()`.
+Use it with `getFilter()` for normal include-pattern discovery. Use `makeFilter()` when the caller can cheaply reject entries before calling `includes()`. The built-in `filterByExt` check is for the default leaf/fileinfo traversal; use a callable filter when custom iterator modes or current modes need extension filtering.
+
+```php
+$phpFiles = IncludeFile::get_files( $baseDir, 'php' );
+```
 
 ## Custom Discovery Filters
 
-Use the default callback filter for normal discovery. The source is short enough to treat as the baseline:
+Use `makeFilter()` to extend the default callback filter without replacing its include-pattern behavior. Pass `'allowLinks' => TRUE` to `getFilter()` or `makeFilter()` to let the traversal filter treat linked directories as children.
+
+The optional callbacks receive:
 
 ```php
-public function getDefaultCallbackFilter ( string $baseDir ): callable|false
-{
-	$includeDirs = static::get_terminating_directory_instance( $this->patterns );
-
-	$baseDir = static::add_trailing_slash( static::normalize( $baseDir ) );
-
-	return function ( $fileInfo, $absPath ) use ( $baseDir, $includeDirs ): bool {
-		$relPath = static::strip_base( $absPath, $baseDir );
-
-		if ( is_dir( $absPath ) ) {
-			return $includeDirs ? $includeDirs->includes( $relPath ) : TRUE;
-		}
-
-		return $this->includes( $relPath );
-	};
-}
+'dir'  => function ( $iterator, $fileInfo, string $absPath, string $relPath, string $baseDir, IncludeFile|false $includeDirs, IncludeFile $include ): ?bool
+'file' => function ( $fileInfo, $iterator, string $absPath, string $relPath, string $baseDir, IncludeFile $include, IncludeFile|false $includeDirs ): ?bool
 ```
 
-Use a custom filter when caller-specific checks can avoid unnecessary pattern matching.
+Return `TRUE` or `FALSE` to short-circuit the default filter. Return `NULL` to continue to the default behavior.
+
+Callbacks may omit trailing parameters, but declared parameters must keep the documented order.
 
 ```php
-function getCustomCallbackFilter ( string $baseDir, array $patterns ): callable|false
-{
-	$includeDirs = static::get_terminating_directory_instance( $patterns );
-
-	$baseDir = static::add_trailing_slash( static::normalize( $baseDir ) );
-
-	return function ( $fileInfo, $absPath ) use ( $baseDir, $includeDirs ): bool {
-		$relPath = static::strip_base( $absPath, $baseDir );
-
-		if ( is_dir( $absPath ) ) {
-			return $includeDirs ? $includeDirs->includes( $relPath ) : TRUE;
-		}
-		
-		// Add cheap pre-check before regex-backed include matching when the caller knows the target shape.
-		// This speeds up performance considerably by avoiding unnecessary regex checks.
+$filter = $include->makeFilter( $baseDir, [
+	'file' => function ( $fileInfo, $iterator, string $absPath, string $relPath ): ?bool {
 		if ( !str_ends_with( strtolower( $relPath ), '.php' ) ) {
 			return FALSE;
 		}
 
-		return $this->includes( $relPath );
-	};
-}
+		return NULL;
+	},
+] );
 ```
+
+Passing a string extension or dotted filename suffix to `makeFilter()` adds the same cheap pre-check:
+
+```php
+$filter = $include->makeFilter( $baseDir, 'php' );
+```
+
+For default behavior, `getFilter()` is shorthand for `makeFilter( $baseDir )`.
+
+`getDefaultCallbackFilter()` is still available as a deprecated compatibility alias.
 
 That check is useful when the caller only wants PHP files. The suffix check is a simple string operation; `includes()` runs the regex-backed pattern matcher. Avoiding that regex check for paths that cannot match is useful when walking large trees.
 

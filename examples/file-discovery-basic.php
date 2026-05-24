@@ -15,7 +15,7 @@ $include = new IncludeFile( [
 ] );
 
 $files = IncludeFile::get_files( $baseDir, [
-	'filter' => $include->getDefaultCallbackFilter( $baseDir ),
+	'filter' => $include->getFilter( $baseDir ),
 ] );
 
 $entries = iterator_to_array( $files );
